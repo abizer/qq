@@ -2,12 +2,15 @@
 
 import argparse
 import os
+import sys
 import platform
 import subprocess
 import sys
 import tempfile
 from functools import partial
 from typing import Callable, Dict
+import readline
+import cmd
 
 import litellm
 
@@ -36,7 +39,7 @@ You are an expert in explaining command-line operations across various operating
 6. If applicable, mention any potential side effects or important considerations.
 7. Conclude with a one-line summary of the overall operation.
 8. Use technical terminology where appropriate
-9. Make sure your output is formatted correctly and carefully to be clear and visually appealing. Don't use excessive spacing or newlines, keep your output condensed, but keep different components of the output separate from one another with an extra newline, for example, the final command explanation.
+9. Make sure your output is formatted correctly and carefully to be clear and visually appealing. Don't use excessive spacing or newlines, keep your output condensed, but add a newline before the final command explanation.
 10. If the shell supports colors, intelligently colorize your output, but if the shell does not, do not output any colors. 
     It is very important that if colors are disabled, you do not output colors, despite what the examples say.
 11. Do not include <output></output> tags or special formatting tags like backticks. These are unnecessary on the terminal.
@@ -172,6 +175,57 @@ Output: <command>grep -r '/opt/home' ~/.*(D.)</command>
 """
 
 
+class gencmd(cmd.Cmd):
+    prompt = "expla(i)n / e(x)ec / (e)dit / (r)eprompt / (q)uit > "
+    use_rawinput = False
+
+    def __init__(self, command, query, llm, args):
+        super().__init__()
+        self.command = command
+        self.query = query
+        self.llm = llm
+        self.args = args
+
+    def do_i(self, arg):
+        explain(self.llm, self.command, self.args)
+
+    def do_x(self, arg):
+        # bye! this might not be safe if we have any fds open but w/e
+        os.execlp("zsh", "zsh", "-c", self.command)
+
+    def do_e(self, arg):
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".txt", delete=False) as tmp:
+            tmp.write(self.command)
+            tmp_filename = tmp.name
+
+        try:
+            subprocess.run(["vim", tmp_filename], check=True)
+            with open(tmp_filename, "r") as tmp:
+                self.command = tmp.read().strip()
+        finally:
+            os.unlink(tmp_filename)
+
+    def do_r(self, arg):
+        """Reprompt for query"""
+        self.query = input("> ")
+        return True
+
+    def do_q(self, arg):
+        """Quit"""
+        return True
+
+    def default(self, line):
+        print(f"Unknown command: {line}")
+        self.do_help(None)
+
+    def preloop(self):
+        print(f"Command to execute: {self.command}")
+
+    def postcmd(self, stop, line):
+        print(f"Command to execute: {self.command}")
+        return stop
+
+
 def supports_color(enabled: bool):
     """
     Returns True if the running system's terminal supports color,
@@ -210,19 +264,11 @@ def explain(llm: Callable, query: str, args: dict) -> None:
         {"role": "user", "content": query},
     ]
 
-    buffer = []
     for chunk in llm(messages=messages):
         content = chunk.choices[0].delta.content
         if content:
             print(content, end="", flush=True)
-    #         buffer.append(content)
-    #         if "\n" in content:
-    #             head, tail = content.split("\n", 1)
-    #             buffer.append(head)
-    #             print("".join(buffer), end="\n", flush=True)
-    #             buffer = [tail]
-    # if buffer:
-    #     print("".join(buffer), end="", flush=True)
+
     print()  # Print a newline at the end
 
 
@@ -256,9 +302,7 @@ def generate(llm: Callable, query: str, args: dict) -> None:
         for chunk in llm(messages=messages):
             content = chunk.choices[0].delta.content
             if content:
-                print(content, end="", flush=True)
                 result += content
-        print()  # Print a newline at the end
 
         messages.append({"role": "assistant", "content": result})
 
@@ -268,30 +312,49 @@ def generate(llm: Callable, query: str, args: dict) -> None:
         # clean it up a little
         result = result.replace("<command>", "").replace("</command>", "")
 
-        print(f"Command to execute: {command}")
-        print("e(x)ec / (e)dit / (r)etry / (q)uit: ", end="")
-        choice = input().strip().lower()
-        match choice:
-            case "x":
-                # bye!
-                os.execlp("zsh", "zsh", "-c", command)
-            case "e":
-                with tempfile.NamedTemporaryFile(
-                    mode="w+", suffix=".txt", delete=False
-                ) as tmp:
-                    tmp.write(result)
-                    tmp_filename = tmp.name
-
-                try:
-                    subprocess.run(["sh", "-c", "$EDITOR", tmp_filename], check=True)
-                    with open(tmp_filename, "r") as tmp:
-                        query = tmp.read().strip()
-                finally:
-                    os.unlink(tmp_filename)
-            case "r":
-                query = input("Enter your reprompt: ")
-            case "q" | _:
+        # print(f"Command to execute: {command}")
+        c = gencmd(command, query, llm, args)
+        c.cmdloop()
+        match c.lastcmd:
+            case "q":
                 break
+            case "r":
+                query = c.query
+            case _:
+                command = c.command
+
+        # while True:
+        #
+        #     print("expla(i)n / e(x)ec / (e)dit / (r)eprompt / (q)uit: ", end="")
+        #     choice = input().strip().lower()
+        #     match choice:
+        #         case "i":
+        #             explain(llm, command, args)
+        #         case "x":
+        #             # bye!
+        #             os.execlp("zsh", "zsh", "-c", command)
+        #         case "e":
+        #             with tempfile.NamedTemporaryFile(
+        #                 mode="w+", suffix=".txt", delete=False
+        #             ) as tmp:
+        #                 tmp.write(command)
+        #                 tmp_filename = tmp.name
+
+        #             try:
+        #                 subprocess.run(["vim", tmp_filename], check=True)
+        #                 with open(tmp_filename, "r") as tmp:
+        #                     command = tmp.read().strip()
+        #             finally:
+        #                 os.unlink(tmp_filename)
+        #             break
+        #         case "r":
+        #             readline.set_startup_hook(lambda: readline.insert_text(query))
+        #             try:
+        #                 query = sys.stdin.readline()
+        #             finally:
+        #                 readline.set_startup_hook()
+        #         case "q" | _:
+        #             break
 
 
 def main():
@@ -307,7 +370,7 @@ def main():
     parser.add_argument(
         "-m",
         "--model",
-        default="claude-3-sonnet-20240229",
+        default="gpt-4o",  # "claude-3-sonnet-20240229",
         help="Model to use for completion",
     )
     parser.add_argument(
