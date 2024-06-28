@@ -13,19 +13,21 @@ import readline
 import cmd
 
 import litellm
+from litellm import completion_cost
+from litellm.integrations.custom_logger import CustomLogger
 
-os.environ["LITELLM_LOG"] = "DEBUG"
+# this sucks
+_response_cost = 0.0
 
 
-# Check for required API keys
-NEEDED_KEYS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")
-missing_keys = [key for key in NEEDED_KEYS if not os.getenv(key)]
-if missing_keys:
-    print(
-        f"Error: The following API key(s) are not set: {', '.join(missing_keys)}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+def _track_cost(kwargs, *args):
+    global _response_cost
+    _response_cost += float(kwargs.get("response_cost", 0))
+    print(f"\033[1;37mCost ${_response_cost:.4f}\033[0m ", file=sys.stderr)
+
+
+# this is so bad
+litellm.success_callback = [_track_cost]
 
 EXPLAIN_PROMPT = """
 You are an expert in explaining command-line operations across various operating systems and shells. Your task is to provide clear, concise, and accurate explanations of commands, pipelines, and scripts. Follow these guidelines:
@@ -176,7 +178,7 @@ Output: <command>grep -r '/opt/home' ~/.*(D.)</command>
 
 
 class gencmd(cmd.Cmd):
-    prompt = "expla(i)n / e(x)ec / (e)dit / (r)eprompt / (q)uit > "
+    prompt = "(e)xplain / e(x)ec / ed(i)t / (r)eprompt / (q)uit > "
     use_rawinput = False
 
     def __init__(self, command, query, llm, args):
@@ -186,14 +188,17 @@ class gencmd(cmd.Cmd):
         self.llm = llm
         self.args = args
 
-    def do_i(self, arg):
+    def do_e(self, arg):
+        """Explain the command"""
         explain(self.llm, self.command, self.args)
 
     def do_x(self, arg):
+        """execlp() the command"""
         # bye! this might not be safe if we have any fds open but w/e
         os.execlp("zsh", "zsh", "-c", self.command)
 
-    def do_e(self, arg):
+    def do_i(self, arg):
+        """Edit command in vim"""
         with tempfile.NamedTemporaryFile(mode="w+", suffix=".txt", delete=False) as tmp:
             tmp.write(self.command)
             tmp_filename = tmp.name
@@ -206,7 +211,7 @@ class gencmd(cmd.Cmd):
             os.unlink(tmp_filename)
 
     def do_r(self, arg):
-        """Reprompt for query"""
+        """Issue follow up query for prompt"""
         self.query = input("> ")
         return True
 
@@ -253,12 +258,6 @@ def explain(llm: Callable, query: str, args: dict) -> None:
         {"color_support": "enabled" if supports_color(args.color) else "disabled"},
     )
 
-    if args.debug:
-        print("\033[1;31mDEBUG: imbued system_prompt\033[0m")
-        print(system_prompt)
-        print("\033[1;31mDEBUG: repr(imbued system_prompt)\033[0m")
-        print(repr(system_prompt))
-
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": query},
@@ -268,8 +267,7 @@ def explain(llm: Callable, query: str, args: dict) -> None:
         content = chunk.choices[0].delta.content
         if content:
             print(content, end="", flush=True)
-
-    print()  # Print a newline at the end
+    print()
 
 
 def generate(llm: Callable, query: str, args: dict) -> None:
@@ -323,39 +321,6 @@ def generate(llm: Callable, query: str, args: dict) -> None:
             case _:
                 command = c.command
 
-        # while True:
-        #
-        #     print("expla(i)n / e(x)ec / (e)dit / (r)eprompt / (q)uit: ", end="")
-        #     choice = input().strip().lower()
-        #     match choice:
-        #         case "i":
-        #             explain(llm, command, args)
-        #         case "x":
-        #             # bye!
-        #             os.execlp("zsh", "zsh", "-c", command)
-        #         case "e":
-        #             with tempfile.NamedTemporaryFile(
-        #                 mode="w+", suffix=".txt", delete=False
-        #             ) as tmp:
-        #                 tmp.write(command)
-        #                 tmp_filename = tmp.name
-
-        #             try:
-        #                 subprocess.run(["vim", tmp_filename], check=True)
-        #                 with open(tmp_filename, "r") as tmp:
-        #                     command = tmp.read().strip()
-        #             finally:
-        #                 os.unlink(tmp_filename)
-        #             break
-        #         case "r":
-        #             readline.set_startup_hook(lambda: readline.insert_text(query))
-        #             try:
-        #                 query = sys.stdin.readline()
-        #             finally:
-        #                 readline.set_startup_hook()
-        #         case "q" | _:
-        #             break
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -370,7 +335,8 @@ def main():
     parser.add_argument(
         "-m",
         "--model",
-        default="gpt-4o",  # "claude-3-sonnet-20240229",
+        # using 4o because claude refuses to output colors properly
+        default="gpt-4o",  # "claude-3-sonnet-20240229"
         help="Model to use for completion",
     )
     parser.add_argument(
@@ -406,13 +372,6 @@ def main():
     args = parser.parse_args()
 
     query = " ".join(args.query)
-
-    try:
-        # we'll get rid of this eventually
-        pass
-    except ImportError:
-        print("Error: litellm was not found.")
-        sys.exit(1)
 
     llm = partial(
         litellm.completion,
