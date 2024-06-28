@@ -49,3 +49,7 @@ ffmpeg version 7.0.1 Copyright (c) 2000-2024 the FFmpeg developers
   built with Apple clang version 15.0.0 (clang-1500.3.9.4)
   ...
 ```
+
+dependencies: litellm (for now)
+
+installation: `pipx install git+https://github.com/abizer/qq.git`
