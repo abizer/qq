@@ -1,8 +1,5 @@
 qq - command line explainer/generator
 
-notice: doesn't completely work yet, but soon, maybe. printing out colors is not
-working correctly
-
 You have a command:
 
 ```sh
