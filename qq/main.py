@@ -336,7 +336,7 @@ def main():
         "-m",
         "--model",
         # using 4o because claude refuses to output colors properly
-        default="gpt-4o",  # "claude-3-sonnet-20240229"
+        default="gpt-4o-mini",  # "claude-3-sonnet-20240229"
         help="Model to use for completion",
     )
     parser.add_argument(
